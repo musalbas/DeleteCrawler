@@ -10,10 +10,13 @@ import urllib2
 sqlitecon: a sqlite connection object."""
 class DeleteCrawlerBot(object):
     sql_create_username_table = 'CREATE TABLE IF NOT EXISTS usernames(username TEXT PRIMARY KEY NOT NULL);'
-    sql_create_tweets_table = 'CREATE TABLE IF NOT EXISTS tweets(username TEXT NOT NULL, tweet TEXT NOT NULL, rawtweet TEXT NOT NULL, tweetid INTEGER PRIMARY KEY NOT NULL, deleted INTEGER DEFAULT 0);'
-    sql_add_username = 'INSERT INTO usernames VALUES(?);'
-    sql_insert_tweet = 'INSERT INTO tweets VALUES(?, ?, ?, ?, 0)'
-    sql_get_tweets_by_username_tweetid = 'SELECT * FROM tweets WHERE username = ? AND tweetid >= ?'
+    sql_create_tweets_table = 'CREATE TABLE IF NOT EXISTS tweets(username TEXT NOT NULL, tweet TEXT NOT NULL, rawtweet TEXT NOT NULL, tweetid INTEGER UNIQUE NOT NULL, deleted INTEGER DEFAULT 0, retweet_of TEXT DEFAULT NULL);'
+
+    sql_insert_username = 'INSERT INTO usernames VALUES(?);'
+    sql_insert_tweet = 'INSERT INTO tweets VALUES(?, ?, ?, ?, 0, ?)'
+
+    sql_select_tweets_by_username_tweetid = 'SELECT * FROM tweets WHERE username = ? AND tweetid >= ?'
+
     sql_update_tweet_deleted = 'UPDATE tweets SET deleted = 1 WHERE tweetid = ?'
 
     def __init__(self, sqlitecon):
@@ -31,7 +34,7 @@ class DeleteCrawlerBot(object):
     username: Twitter username.
     """
     def add_username(self, username):
-        self.sqlitecur.execute(self.sql_add_username, (username,))
+        self.sqlitecur.execute(self.sql_insert_username, (username,))
 
     """Crawl an account and update the database.
 
@@ -42,10 +45,16 @@ class DeleteCrawlerBot(object):
         tweets = []
         for i in range(pages):
             tweets += crawler.get_next_page()
-        last_tweetid = tweets[-1][3]
+
+        last_tweetid = None
+        for i in range(len(tweets)):
+            if tweets[-(i+1)][4] is None:
+                last_tweetid = tweets[-(i+1)][3]
+        if last_tweetid is None:
+            return # cannot determine last non-RT tweetid
 
         db_tweetids = []
-        for tweet in self.sqlitecur.execute(self.sql_get_tweets_by_username_tweetid, (username, last_tweetid)).fetchall():
+        for tweet in self.sqlitecur.execute(self.sql_select_tweets_by_username_tweetid, (username, last_tweetid)).fetchall():
             db_tweetids.append(tweet[3])
 
         source_tweetids = []
@@ -105,8 +114,10 @@ class TwitterAccountCrawler(object):
                 current_tweet = re.sub('<[^<]+?>', '', current_rawtweet)
                 current_tweet = self._htmlparser.unescape(current_tweet.decode('utf8')).strip()
                 if self.username != current_username:
-                    current_tweet = 'RT @' + current_username
-                tweets.append((self.username, current_tweet, current_rawtweet, current_tweetid))
+                    current_retweet_of = current_username
+                else:
+                    current_retweet_of = None
+                tweets.append((self.username, current_tweet, current_rawtweet, current_tweetid, current_retweet_of))
             elif 'max_id' in line:
                 self._current_max_id = self.re_max_id.search(line).group(1)
 
